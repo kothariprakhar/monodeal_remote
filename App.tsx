@@ -74,19 +74,36 @@ const App: React.FC = () => {
 
   // --- Multiplayer Logic ---
 
+  // Helper to generate readable Short IDs (3 Letters + 2 Numbers)
+  const generateShortId = () => {
+    const letters = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // Removed I, O for clarity
+    const nums = "23456789"; // Removed 0, 1 for clarity
+    let id = "";
+    for(let i=0; i<3; i++) id += letters.charAt(Math.floor(Math.random() * letters.length));
+    for(let i=0; i<2; i++) id += nums.charAt(Math.floor(Math.random() * nums.length));
+    return id;
+  };
+
   // Setup connection handlers
   const setupConnection = useCallback((conn: DataConnection, mode: 'HOST' | 'JOIN') => {
     conn.on('open', () => {
-      setMultiStatus('Connected! Starting game...');
-      if (mode === 'HOST') {
-        // Allow connection to stabilize before syncing initial state
-        setTimeout(() => initializeGame(false, true), 500);
+      if (mode === 'JOIN') {
+         setMultiStatus('Connected! Handshaking...');
+         // Handshake: Joiner tells Host they are ready to receive state
+         conn.send({ type: 'READY' });
+      } else {
+         setMultiStatus('Player connected. Waiting for handshake...');
       }
     });
 
     conn.on('data', (data: any) => {
       if (data.type === 'STATE_UPDATE') {
         setGameState(data.state);
+        setMultiStatus(''); // Clear status on game start
+      } else if (data.type === 'READY' && mode === 'HOST') {
+        // Host received READY from Joiner, start the game
+        setMultiStatus('Handshake complete. Starting...');
+        initializeGame(false, true);
       }
     });
 
@@ -109,14 +126,19 @@ const App: React.FC = () => {
         peerRef.current.destroy();
     }
 
-    const customId = mode === 'HOST' ? Math.random().toString(36).substring(2, 7).toUpperCase() : undefined;
+    // Prefix prevents collisions on public server
+    const shortId = generateShortId();
+    const customId = mode === 'HOST' ? `MONODEAL-${shortId}` : undefined;
+    
     const peer = new Peer(customId);
     peerRef.current = peer;
 
     setMultiStatus(mode === 'HOST' ? 'Waiting for player to join...' : 'Initializing...');
 
     peer.on('open', (id) => {
-      setPeerId(id);
+      // Display only the short part to the user
+      const displayId = id.replace('MONODEAL-', '');
+      setPeerId(displayId);
       if (mode === 'JOIN') {
         setMultiStatus('Ready to connect. Enter code.');
       }
@@ -132,6 +154,8 @@ const App: React.FC = () => {
       console.error("Peer Error:", err);
       setMultiStatus(`Peer Error: ${err.type}`);
     });
+    
+    // Cleanup on unmount (or logic change) if needed, currently manual cancel does it
   }, [setupConnection]);
 
   const connectToHost = () => {
@@ -139,13 +163,30 @@ const App: React.FC = () => {
     setMultiStatus('Connecting to host...');
     
     try {
-        const conn = peerRef.current.connect(joinId.trim().toUpperCase(), { serialization: 'json' });
+        // Reconstruct full ID
+        const targetId = `MONODEAL-${joinId.trim().toUpperCase()}`;
+        
+        // Use reliable: true for game state
+        const conn = peerRef.current.connect(targetId, { 
+            serialization: 'json',
+            reliable: true 
+        });
+        
         if (!conn) {
-             setMultiStatus('Connection failed to initialize.');
+             setMultiStatus('Connection failed to create.');
              return;
         }
+        
         connRef.current = conn;
         setupConnection(conn, 'JOIN');
+        
+        // Timeout fallback if connection hangs
+        setTimeout(() => {
+           if (!conn.open && multiStatus === 'Connecting to host...') {
+               setMultiStatus('Connection timed out. Check code/firewall.');
+           }
+        }, 8000);
+
     } catch (e) {
         console.error(e);
         setMultiStatus('Connection exception.');
