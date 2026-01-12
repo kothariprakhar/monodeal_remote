@@ -131,6 +131,7 @@ const App: React.FC = () => {
     const customId = mode === 'HOST' ? `MONODEAL-${shortId}` : undefined;
     
     // Explicit STUN servers are critical for cross-region connections
+    // Added more comprehensive list to handle symmetric NATs better
     const peer = new Peer(customId, {
       config: {
         iceServers: [
@@ -138,6 +139,8 @@ const App: React.FC = () => {
           { urls: 'stun:stun2.l.google.com:19302' },
           { urls: 'stun:stun3.l.google.com:19302' },
           { urls: 'stun:stun4.l.google.com:19302' },
+          { urls: 'stun:stun.ekiga.net' },
+          { urls: 'stun:stun.ideasip.com' }
         ]
       },
       debug: 1 // Errors only
@@ -164,23 +167,43 @@ const App: React.FC = () => {
 
     peer.on('error', (err) => {
       console.error("Peer Error:", err);
-      setMultiStatus(`Network Error: ${err.type}`);
+      if (err.type === 'peer-unavailable') {
+         setMultiStatus('Error: Room code not found. Check spelling.');
+      } else if (err.type === 'network') {
+         setMultiStatus('Error: Network connection failed.');
+      } else {
+         setMultiStatus(`Error: ${err.type}`);
+      }
+    });
+
+    // Heartbeat to keep connection alive
+    const heartbeat = setInterval(() => {
+        if (peer && !peer.destroyed) {
+            peer.socket.send({type: 'HEARTBEAT'});
+        }
+    }, 5000);
+
+    // Attach cleanup to peer object so we can clear interval on destroy
+    (peer as any)._heartbeat = heartbeat;
+
+    peer.on('close', () => {
+        clearInterval(heartbeat);
     });
     
   }, [setupConnection]);
 
   const connectToHost = () => {
     if (!joinId || !peerRef.current) return;
-    setMultiStatus('Looking for host...');
+    setMultiStatus('Finding host...');
     
     try {
         // Reconstruct full ID
         const targetId = `MONODEAL-${joinId.trim().toUpperCase()}`;
         
-        // Removed reliable:true to avoid negotiation hangs on some networks
-        // Default reliable is usually sufficient for games
+        // Use reliable: true for state, but handle ICE carefully
         const conn = peerRef.current.connect(targetId, { 
-            serialization: 'json'
+            serialization: 'json',
+            reliable: true 
         });
         
         if (!conn) {
@@ -192,11 +215,15 @@ const App: React.FC = () => {
         setupConnection(conn, 'JOIN');
         
         // Extended timeout for cross-ocean connections
-        setTimeout(() => {
-           if (!conn.open && (multiStatus === 'Looking for host...' || multiStatus === 'Connecting...')) {
-               setMultiStatus('Connection timed out. Firewalls might be blocking.');
+        const timeoutId = setTimeout(() => {
+           if (!conn.open && (multiStatus === 'Finding host...' || multiStatus === 'Connecting...')) {
+               setMultiStatus('Connection timed out. Check code or try again.');
+               // Don't close immediately, give it a bit more time for retries or slow networks
            }
-        }, 15000);
+        }, 10000);
+
+        conn.on('open', () => clearTimeout(timeoutId));
+        conn.on('error', () => clearTimeout(timeoutId));
 
     } catch (e) {
         console.error(e);
@@ -207,7 +234,11 @@ const App: React.FC = () => {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (peerRef.current) peerRef.current.destroy();
+      if (peerRef.current) {
+          const hb = (peerRef.current as any)._heartbeat;
+          if (hb) clearInterval(hb);
+          peerRef.current.destroy();
+      }
     };
   }, []);
 
