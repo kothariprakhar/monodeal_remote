@@ -30,6 +30,48 @@ const App: React.FC = () => {
     gameStateRef.current = gameState;
   }, [gameState]);
 
+  // --- Core Engine Helpers ---
+
+  const shuffle = useCallback(<T,>(array: T[]): T[] => {
+    const newArr = [...array];
+    for (let i = newArr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
+    }
+    return newArr;
+  }, []);
+
+  const syncState = useCallback((state: GameState) => {
+    if (connRef.current && connRef.current.open) {
+      connRef.current.send({ type: 'STATE_UPDATE', state });
+    }
+  }, []);
+
+  const initializeGame = useCallback((vsAI: boolean = true, isMultiplayer: boolean = false) => {
+    const deck = shuffle([...RAW_DECK]);
+    const player1Hand = deck.splice(0, 5);
+    const player2Hand = deck.splice(0, 5);
+
+    const newState: GameState = {
+      players: [
+        { id: 'p1', name: isMultiplayer ? 'Host' : 'Player 1', hand: player1Hand, bank: [], properties: [], isAI: false },
+        { id: 'p2', name: vsAI ? 'Gemini AI' : (isMultiplayer ? 'Guest' : 'Player 2'), hand: player2Hand, bank: [], properties: [], isAI: vsAI }
+      ],
+      activePlayerIndex: 0,
+      deck: deck,
+      discardPile: [],
+      phase: 'START_TURN',
+      actionsRemaining: 3,
+      logs: ['Game started! Master the market.'],
+      winner: null,
+      multiplayerRole: isMultiplayer ? 'HOST' : undefined,
+      pendingAction: null
+    };
+
+    setGameState(newState);
+    if (isMultiplayer) syncState(newState);
+  }, [shuffle, syncState]);
+
   // --- Multiplayer Logic ---
 
   // Setup connection handlers
@@ -54,7 +96,12 @@ const App: React.FC = () => {
       setLobbyMode('MAIN');
       setJoinId('');
     });
-  }, []);
+
+    conn.on('error', (err) => {
+      console.error("Connection Error:", err);
+      setMultiStatus(`Conn Error: ${err.type}`);
+    });
+  }, [initializeGame]);
 
   const initMultiplayer = useCallback((mode: 'HOST' | 'JOIN') => {
     // Cleanup old peer if exists
@@ -82,62 +129,30 @@ const App: React.FC = () => {
     });
 
     peer.on('error', (err) => {
-      console.error(err);
-      setMultiStatus(`Error: ${err.type}`);
+      console.error("Peer Error:", err);
+      setMultiStatus(`Peer Error: ${err.type}`);
     });
   }, [setupConnection]);
 
   const connectToHost = () => {
     if (!joinId || !peerRef.current) return;
     setMultiStatus('Connecting to host...');
-    const conn = peerRef.current.connect(joinId.toUpperCase());
-    connRef.current = conn;
-    setupConnection(conn, 'JOIN');
-  };
-
-  const syncState = (state: GameState) => {
-    if (connRef.current && connRef.current.open) {
-      connRef.current.send({ type: 'STATE_UPDATE', state });
+    
+    try {
+        const conn = peerRef.current.connect(joinId.trim().toUpperCase(), { serialization: 'json' });
+        if (!conn) {
+             setMultiStatus('Connection failed to initialize.');
+             return;
+        }
+        connRef.current = conn;
+        setupConnection(conn, 'JOIN');
+    } catch (e) {
+        console.error(e);
+        setMultiStatus('Connection exception.');
     }
   };
 
   // --- Core Engine ---
-
-  const shuffle = <T,>(array: T[]): T[] => {
-    const newArr = [...array];
-    for (let i = newArr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [newArr[i], newArr[j]] = [newArr[j], newArr[i]];
-    }
-    return newArr;
-  };
-
-  const initializeGame = (vsAI: boolean = true, isMultiplayer: boolean = false) => {
-    const deck = shuffle([...RAW_DECK]);
-    const player1Hand = deck.splice(0, 5);
-    const player2Hand = deck.splice(0, 5);
-
-    const newState: GameState = {
-      players: [
-        { id: 'p1', name: isMultiplayer ? 'Host' : 'Player 1', hand: player1Hand, bank: [], properties: [], isAI: false },
-        { id: 'p2', name: vsAI ? 'Gemini AI' : (isMultiplayer ? 'Guest' : 'Player 2'), hand: player2Hand, bank: [], properties: [], isAI: vsAI }
-      ],
-      activePlayerIndex: 0,
-      deck: deck,
-      discardPile: [],
-      phase: 'START_TURN',
-      actionsRemaining: 3,
-      logs: ['Game started! Master the market.'],
-      winner: null,
-      // For shared state, simply mark it as HOST initialized. 
-      // Each client determines their role based on local lobbyMode or peer comparison.
-      multiplayerRole: isMultiplayer ? 'HOST' : undefined,
-      pendingAction: null
-    };
-
-    setGameState(newState);
-    if (isMultiplayer) syncState(newState);
-  };
 
   const checkWinCondition = (state: GameState): boolean => {
     const player = state.players[state.activePlayerIndex];
@@ -352,7 +367,7 @@ const App: React.FC = () => {
       if (connRef.current) syncState(newState);
       return newState;
     });
-  }, []);
+  }, [syncState]);
 
   const initiateForceDeal = (targetSetIndex: number) => {
     setGameState(prev => {
@@ -523,7 +538,7 @@ const App: React.FC = () => {
       return newState;
     });
     setSelectedCardId(null);
-  }, [resolvePendingAction]);
+  }, [resolvePendingAction, syncState]);
 
   const startTurn = useCallback(() => {
     setGameState(prev => {
@@ -539,7 +554,7 @@ const App: React.FC = () => {
       if (connRef.current) syncState(newState);
       return newState;
     });
-  }, []);
+  }, [syncState]);
 
   const endTurn = useCallback(() => {
     setGameState(prev => {
@@ -559,7 +574,7 @@ const App: React.FC = () => {
     setPendingRentCard(null);
     setPendingForceDeal(null);
     setPendingSlyDeal(null);
-  }, []);
+  }, [syncState]);
 
   const handleCardClick = useCallback((cardId: string) => {
     if (gameState?.winner || pendingRentCard || gameState?.pendingAction || pendingForceDeal || pendingSlyDeal) return;
