@@ -130,7 +130,19 @@ const App: React.FC = () => {
     const shortId = generateShortId();
     const customId = mode === 'HOST' ? `MONODEAL-${shortId}` : undefined;
     
-    const peer = new Peer(customId);
+    // Explicit STUN servers are critical for cross-region connections
+    const peer = new Peer(customId, {
+      config: {
+        iceServers: [
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+          { urls: 'stun:stun3.l.google.com:19302' },
+          { urls: 'stun:stun4.l.google.com:19302' },
+        ]
+      },
+      debug: 1 // Errors only
+    });
+    
     peerRef.current = peer;
 
     setMultiStatus(mode === 'HOST' ? 'Waiting for player to join...' : 'Initializing...');
@@ -152,46 +164,52 @@ const App: React.FC = () => {
 
     peer.on('error', (err) => {
       console.error("Peer Error:", err);
-      setMultiStatus(`Peer Error: ${err.type}`);
+      setMultiStatus(`Network Error: ${err.type}`);
     });
     
-    // Cleanup on unmount (or logic change) if needed, currently manual cancel does it
   }, [setupConnection]);
 
   const connectToHost = () => {
     if (!joinId || !peerRef.current) return;
-    setMultiStatus('Connecting to host...');
+    setMultiStatus('Looking for host...');
     
     try {
         // Reconstruct full ID
         const targetId = `MONODEAL-${joinId.trim().toUpperCase()}`;
         
-        // Use reliable: true for game state
+        // Removed reliable:true to avoid negotiation hangs on some networks
+        // Default reliable is usually sufficient for games
         const conn = peerRef.current.connect(targetId, { 
-            serialization: 'json',
-            reliable: true 
+            serialization: 'json'
         });
         
         if (!conn) {
-             setMultiStatus('Connection failed to create.');
+             setMultiStatus('Connection failed to initialize.');
              return;
         }
         
         connRef.current = conn;
         setupConnection(conn, 'JOIN');
         
-        // Timeout fallback if connection hangs
+        // Extended timeout for cross-ocean connections
         setTimeout(() => {
-           if (!conn.open && multiStatus === 'Connecting to host...') {
-               setMultiStatus('Connection timed out. Check code/firewall.');
+           if (!conn.open && (multiStatus === 'Looking for host...' || multiStatus === 'Connecting...')) {
+               setMultiStatus('Connection timed out. Firewalls might be blocking.');
            }
-        }, 8000);
+        }, 15000);
 
     } catch (e) {
         console.error(e);
         setMultiStatus('Connection exception.');
     }
   };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (peerRef.current) peerRef.current.destroy();
+    };
+  }, []);
 
   // --- Core Engine ---
 
