@@ -1,0 +1,5 @@
+{
+  "name": "Monopoly Deal Digital",
+  "description": "A high-fidelity digital implementation of the classic Monopoly Deal card game, featuring local multiplayer and a sophisticated Gemini AI opponent.",
+  "requestFramePermissions": []
+}
